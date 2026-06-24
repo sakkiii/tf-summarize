@@ -1,0 +1,75 @@
+name: Publish image
+
+# Manually publish a multi-arch (amd64 + arm64) image to this repo's GHCR
+# namespace using the built-in GITHUB_TOKEN. No GPG key, PAT, git tag or
+# GitHub release is created -- this only builds and pushes the container image.
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: Image tag to publish (e.g. 0.3.20)
+        required: true
+        default: latest
+      push_latest:
+        description: Also tag the image as latest
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup QEMU
+        uses: docker/setup-qemu-action@v4
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image reference
+        id: image
+        run: |
+          owner="$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          name="ghcr.io/${owner}/tf-summarize"
+          tags="${name}:${{ inputs.image_tag }}"
+          if [ "${{ inputs.push_latest }}" = "true" ]; then
+            tags="${tags}"$'\n'"${name}:latest"
+          fi
+          {
+            echo "tags<<EOF"
+            echo "${tags}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push multi-arch image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          # `release` builds the binary from source inside the image, so no
+          # prebuilt goreleaser artifact is required for this standalone job.
+          target: release
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          build-args: |
+            GOLANG_VERSION=1.26
+            ALPINE_VERSION=3.24
+          tags: ${{ steps.image.outputs.tags }}
+          labels: |
+            org.opencontainers.image.title=tf-summarize
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
